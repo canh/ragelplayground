@@ -1,4 +1,7 @@
+#!/usr/bin/env python3
+
 import subprocess
+from os.path import join
 from tempfile import TemporaryDirectory
 from flask import Flask, request
 from markupsafe import escape
@@ -26,17 +29,21 @@ html = """<!DOCTYPE html>
             .o2 { grid-area: o2; }
             .o3 { grid-area: o3; }
             .o4 { grid-area: o4; }
+
+            textarea {
+              font-family: monospace;
+            }
         </style>
     </head>
     <body> 
-    <form class="layout" hx-post="/" hx-trigger="change" hx-target=".right">
+    <form class="layout" hx-post="/" hx-trigger="change,keyup delay:500" hx-target=".right">
         <textarea name="input" class="left"></textarea>
         <label class="o1">
             <input type="checkbox" name="args" value="-d">
             Do not remove duplicates from action lists
         </label>
         <label class="o2">
-            host language
+            Host language
             <select name="args">
             <option value="-C">C, C++, Obj-C or Obj-C++</option>
                 <option value="-D">D</option>
@@ -77,6 +84,19 @@ html = """<!DOCTYPE html>
     <script src="https://unpkg.com/htmx.org@1.9.12" integrity="sha384-ujb1lZYygJmzgSwoxRggbCHcjc0rB2XoQrxeTUQyRjrOnlCoYta87iKBWq3EsdM2" crossorigin="anonymous"></script>
     <script>
     htmx.logAll();
+    document.querySelector('textarea[name=input]').addEventListener('keydown', function(e) {
+        if (e.key == 'Tab') {
+          e.preventDefault();
+          var start = this.selectionStart;
+          var end = this.selectionEnd;
+
+          // set textarea value to: text before caret + tab + text after caret
+          this.value = this.value.substring(0, start) + '\\t' + this.value.substring(end);
+
+         // put caret at right position again
+        this.selectionStart = this.selectionEnd = start + 1;
+      }
+    });
     </script>
     </body>
 </html>
@@ -88,19 +108,22 @@ app = Flask(__name__)
 def handle():
     if request.method == "GET":
         return html
-
-    with TemporaryDirectory() as tmp:
-        with open(tmp + "/input.txt", "wt") as fp:
-            print(request.form.get("input"), file=fp, end=None)
-        args = request.form.getlist("args")
-        cmd = " ".join(["ragel", *args, tmp + "/input.txt", "-o", tmp + "/output.txt"])
-        child = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, shell=True, text=True)
-        stdout, _ = child.communicate()
-        if child.returncode == 0:
-            with open(tmp + "/output.txt", "rt") as fp:
-                return escape(fp.read())
-        else:
-            return escape(stdout)
+    else:
+        with TemporaryDirectory() as tmp:
+            with open(join(tmp, "input.txt"), "wt") as fp:
+                print(request.form.get("input"), file=fp, end=None)
+            args = request.form.getlist("args")
+            cmd = ["ragel", *args, join(tmp, "input.txt"), "-o", join(tmp, "output.txt")]
+            try:
+                child = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                stdout, _ = child.communicate()
+            except Exception as e:
+                return escape("Can't run ragel: " + e.message)
+            if child.returncode == 0:
+                with open(join(tmp, "output.txt"), "rt") as fp:
+                    return escape(fp.read())
+            else:
+                return escape(stdout)
 
 if __name__ == "__main__":
     app.run(debug=True)
