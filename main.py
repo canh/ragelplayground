@@ -2,9 +2,10 @@
 
 import subprocess
 from os.path import join
+from html import escape
 from tempfile import TemporaryDirectory
-from flask import Flask, request
-from markupsafe import escape
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import parse_qs
 
 html = """<!DOCTYPE html>
 <html>
@@ -102,28 +103,51 @@ html = """<!DOCTYPE html>
 </html>
 """
 
-app = Flask(__name__)
 
-@app.route("/", methods=["GET", "POST"])
-def handle():
-    if request.method == "GET":
-        return html
-    else:
-        with TemporaryDirectory() as tmp:
-            with open(join(tmp, "input.txt"), "wt") as fp:
-                print(request.form.get("input"), file=fp, end=None)
-            args = request.form.getlist("args")
-            cmd = ["ragel", *args, join(tmp, "input.txt"), "-o", join(tmp, "output.txt")]
-            try:
-                child = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-                stdout, _ = child.communicate()
-            except Exception as e:
-                return escape("Can't run ragel: " + e.message)
-            if child.returncode == 0:
-                with open(join(tmp, "output.txt"), "rt") as fp:
-                    return escape(fp.read())
-            else:
-                return escape(stdout)
+class RequestHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(html.encode())
 
-if __name__ == "__main__":
-    app.run(debug=True)
+    def do_POST(self):
+        if (
+            self.path == "/"
+            and self.headers.get("Content-Type") == "application/x-www-form-urlencoded"
+        ):
+            length = int(self.headers.get("Content-Length", 0))
+            form = parse_qs(self.rfile.read(length))
+            with TemporaryDirectory() as tmp:
+                with open(join(tmp, "input.txt"), "wt") as fp:
+                    print(form.get("input", ""), file=fp, end=None)
+                args = form.get("args", [])
+                self.send_response(200)
+                self.end_headers()
+                cmd = [
+                    "ragel",
+                    *args,
+                    join(tmp, "input.txt"),
+                    "-o",
+                    join(tmp, "output.txt"),
+                ]
+                self.log_message("Running %s in %s", cmd, tmp)
+                try:
+                    child = subprocess.Popen(
+                        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+                    )
+                    stdout, _ = child.communicate()
+                except Exception as e:
+                    self.wfile.write(b"Can't run ragel: ")
+                    self.wfile.write(escape(str(e)).encode())
+                    return
+                if child.returncode == 0:
+                    with open(join(tmp, "output.txt"), "rb") as fp:
+                        self.wfile.write(escape(fp.read()))
+                else:
+                    self.wfile.write(escape(stdout))
+
+
+with HTTPServer(("localhost", 8000), RequestHandler) as server:
+    server.serve_forever()
